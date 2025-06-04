@@ -4,3 +4,5 @@ spacy
 requests
 beautifulsoup4
 ollama
+openai
+
