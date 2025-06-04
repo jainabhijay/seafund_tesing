@@ -20,7 +20,14 @@ PDF_PATH = "/Users/abhijayjain/Desktop/Seafund/Streamlit demo02/uploads/Executiv
 st.set_page_config(layout="wide")
 st.title("📄 Pitch Deck + Investor Memo Analyzer")
 
-nlp = spacy.load("en_core_web_sm")
+# Check if the model is already installed
+model_name = "en_core_web_sm"
+if importlib.util.find_spec(model_name) is None:
+    print("Downloading spaCy model...")
+    subprocess.run(["python", "-m", "spacy", "download", model_name])
+
+# Now load it
+nlp = spacy.load(model_name)
 
 def extract_pdf_content(pdf_path):
     with open(pdf_path, "rb") as file:
