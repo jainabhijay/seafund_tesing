@@ -1,150 +1,96 @@
 import os
-import re
 import json
-import requests
 import PyPDF2
-import spacy
-from bs4 import BeautifulSoup
-from datetime import datetime
 import streamlit as st
-from openai import OpenAI  # Groq-compatible OpenAI SDK
+import spacy
+from openai import OpenAI
+import base64
 
-# Initialize Groq API client with hardcoded key (for testing only)
+# Setup Groq-compatible OpenAI client
 client = OpenAI(
     api_key="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",
     base_url="https://api.groq.com/openai/v1"
 )
 
-PDF_PATH = "/Users/abhijayjain/Desktop/Seafund/Streamlit demo02/uploads/Executive Summary - iHub Robotics.pdf"
-
-st.set_page_config(layout="wide")
-st.title("📄 Pitch Deck + Investor Memo Analyzer")
-
 nlp = spacy.load("en_core_web_sm")
 
-def extract_pdf_content(pdf_path):
-    with open(pdf_path, "rb") as file:
-        pdf_reader = PyPDF2.PdfReader(file)
-        text = "\n".join([page.extract_text() for page in pdf_reader.pages if page.extract_text()])
-    return analyze_text_content(text)
+# Initialize session state
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
+if "memo_generated" not in st.session_state:
+    st.session_state.memo_generated = False
+if "final_memo" not in st.session_state:
+    st.session_state.final_memo = ""
+if "uploaded_file_path" not in st.session_state:
+    st.session_state.uploaded_file_path = ""
+if "user_company_name" not in st.session_state:
+    st.session_state.user_company_name = None
 
-def analyze_text_content(text):
-    doc = nlp(text)
-    entities = {
-        "companies": list(set([ent.text.strip() for ent in doc.ents if ent.label_ == "ORG"])),
-        "people": list(set([ent.text.strip() for ent in doc.ents if ent.label_ == "PERSON"])),
-        "locations": list(set([ent.text.strip() for ent in doc.ents if ent.label_ == "GPE"])),
-        "dates": list(set([ent.text.strip() for ent in doc.ents if ent.label_ == "DATE"])),
-        "money": list(set([ent.text.strip() for ent in doc.ents if ent.label_ == "MONEY"])),
-        "raw_text": text
-    }
-    return entities
+st.set_page_config(layout="wide")
+st.title("📄 AI Investor Memo Generator (Groq + Web Simulation)")
 
-def search_google(query, max_results=5):
-    headers = {"User-Agent": "Mozilla/5.0"}
-    url = f"https://www.google.com/search?q={query}"
+if not st.session_state.user_company_name:
+    with st.form("company_form"):
+        st.markdown("### 🚀 Before we begin, tell us the startup's name:")
+        entered_name = st.text_input("Company Name", placeholder="e.g., Zepto, Bluelearn, etc.", max_chars=100)
+        submitted = st.form_submit_button("Start")
+        if submitted and entered_name.strip():
+            st.session_state.user_company_name = entered_name.strip()
+            st.rerun()
+    st.stop()
+
+with st.sidebar:
+    st.markdown("### 🏷️ Company Details")
+    st.markdown(f"**Current Company:** `{st.session_state.user_company_name}`")
+    if st.button("🔁 Change Company Name"):
+        st.session_state.user_company_name = None
+        st.session_state.memo_generated = False
+        st.rerun()
+    uploaded_file = st.file_uploader("Upload a Pitch Deck (PDF)", type="pdf")
+
+def chat_with_groq(user_input):
+    messages = st.session_state.chat_history + [{"role": "user", "content": user_input}]
     try:
-        response = requests.get(url, headers=headers)
-        soup = BeautifulSoup(response.text, 'html.parser')
-        results = []
-        for g in soup.find_all('div', class_='tF2Cxc')[:max_results]:
-            title = g.find('h3').text if g.find('h3') else 'No Title'
-            link = g.find('a')['href']
-            results.append({"title": title, "link": link})
-        return results
-    except Exception:
-        return []
+        response = client.chat.completions.create(
+            model="llama3-70b-8192",
+            messages=messages,
+            temperature=0.5
+        )
+        reply = response.choices[0].message.content.strip()
+        st.session_state.chat_history.append({"role": "user", "content": user_input})
+        st.session_state.chat_history.append({"role": "assistant", "content": reply})
+        return reply
+    except Exception as e:
+        return f"[Chatbot Error: {str(e)}]"
 
-def fetch_google_news(query):
-    headers = {"User-Agent": "Mozilla/5.0"}
-    url = f"https://news.google.com/search?q={query}"
+def extract_text_by_page(file_path):
+    with open(file_path, "rb") as f:
+        reader = PyPDF2.PdfReader(f)
+        return [page.extract_text() for page in reader.pages if page.extract_text()]
+
+def summarize_page_content(page_text, page_number):
+    prompt = f"Summarize this pitch deck page {page_number} for investment analysis:\n\n{page_text}"
     try:
-        response = requests.get(url, headers=headers)
-        soup = BeautifulSoup(response.text, 'html.parser')
-        articles = soup.find_all('a', class_='DY5T1d')
-        return [{"title": a.text.strip(), "link": f"https://news.google.com{a['href'][1:]}"} for a in articles[:5]]
-    except Exception:
-        return []
+        response = client.chat.completions.create(
+            model="llama3-70b-8192",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.5
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        return f"[Groq failed on page {page_number}: {str(e)}]"
 
-def extract_website_from_text(text):
-    urls = re.findall(r'(https?://[\w\.-]+)', text)
-    for url in urls:
-        if "linkedin.com" not in url:
-            return url
-    return None
-
-def scrape_site_metadata(url):
-    try:
-        response = requests.get(url)
-        soup = BeautifulSoup(response.text, 'html.parser')
-        return {
-            "title": soup.title.string if soup.title else "",
-            "meta_description": next((tag.get("content") for tag in soup.find_all("meta") if tag.get("name") == "description"), ""),
-            "meta_keywords": next((tag.get("content") for tag in soup.find_all("meta") if tag.get("name") == "keywords"), ""),
-        }
-    except Exception:
-        return {}
-
-def web_enrichment(company_name, founders, raw_text):
-    results = {"company_name": company_name}
-    results["company_news"] = fetch_google_news(company_name)
-    results["company_web"] = search_google(company_name)
-    results["founders"] = {}
-    for founder in founders:
-        results["founders"][founder] = {
-            "news": fetch_google_news(founder),
-            "web": search_google(founder)
-        }
-    website = extract_website_from_text(raw_text)
-    if website:
-        results["website"] = website
-        domain = website.split("//")[-1].split("/")[0]
-        results["metadata"] = scrape_site_metadata(website)
-    else:
-        results["website"] = "Not Found"
-        results["metadata"] = {}
-    return results
-
-def generate_structured_output(pdf_data, web_data):
+def summarize_entire_deck(summary_text, company, founders):
     prompt = f"""
-Act as a VC investment analyst.
-Based on the pitch deck content and enriched web research below, write an exhaustive, structured investor memo with subpoints.
+You are helping compress a pitch deck for a VC analyst. Retain important context from the top including:
+- Company name: {company}
+- Founders: {', '.join(founders)}
+- Any funding, product, or traction details if mentioned.
 
---- PITCH DECK ---
-{pdf_data['raw_text']}
+Now, summarize the pitch content concisely (within 1500 words) preserving critical information for investor analysis.
 
---- WEB RESEARCH (company, founders, product news, site metadata) ---
-{json.dumps(web_data, indent=2)}
-
-Your output should include:
-1. Executive Summary
-2. Company Overview
-   - Name, founding year, location, website, domains of operation
-3. Team & Founders
-   - Backgrounds, strengths, possible gaps
-4. Product & IP
-   - Product line, technology stack, innovation, defensibility
-5. Market
-   - TAM/SAM, ICP, timing
-6. Traction
-   - Deployments, revenues, partnerships
-7. Financial Summary
-   - Previous rounds, ask, use of funds
-8. Unit Economics
-   - Pricing model, margin, CAC, LTV
-9. Competitive Landscape
-   - Global + Indian peers with funding and stage comparisons
-10. Website & Public Presence
-   - Meta info, brand perception, credibility
-11. Strategic Concerns & Risks
-12. Roadmap & Execution Readiness
-13. Exit Potential (IPO, acquisition)
-14. Final Recommendation with analyst verdict and confidence rating
-
-Also highlight:
-- Any interesting headlines or PR news from your search
-- Any investor backers or partner signals
-- Gaps or mismatches between vision and execution capability
+--- Full Pitch Text ---
+{summary_text}
 """
     try:
         response = client.chat.completions.create(
@@ -152,36 +98,173 @@ Also highlight:
             messages=[{"role": "user", "content": prompt}],
             temperature=0.4
         )
-        return response.choices[0].message.content
+        return response.choices[0].message.content.strip()
     except Exception as e:
-        return f"[Groq AI failed: {str(e)}]"
+        return f"[Groq summarization failed: {str(e)}]"
 
-# MAIN UI
-with st.sidebar:
-    st.header("Upload Pitch Deck PDF")
-    uploaded_file = st.file_uploader("Choose a PDF", type="pdf")
+def analyze_entities(text):
+    doc = nlp(text)
+    return {
+        "companies": list(set(ent.text.strip() for ent in doc.ents if ent.label_ == "ORG")),
+        "people": list(set(ent.text.strip() for ent in doc.ents if ent.label_ == "PERSON")),
+    }
 
-if uploaded_file:
-    file_path = f"/tmp/{uploaded_file.name}"
-    with open(file_path, "wb") as f:
+def groq_simulate_web_research(company, founders):
+    people_str = ", ".join(founders)
+    prompt = f"""
+You are an advanced AI with access to the internet and VC databases.
+
+Do an exhaustive online research for a startup called **{company}**, founded by {people_str}.
+Collect and summarize publicly available information such as:
+- Company website and domain
+- Founding year, location
+- Products, industry, customer segments
+- Revenue, funding rounds, investors
+- PR mentions, recent news
+- LinkedIn/AngelList/Crunchbase presence
+- Signals of traction or credibility
+
+Provide the research output in JSON format under keys like:
+- name, website, domain, location, founded_year, product_overview, news, social_links, funding_info, investor_names, media_mentions, awards, team_highlights
+
+If anything is missing, say \"unknown\".
+"""
+    try:
+        response = client.chat.completions.create(
+            model="llama3-70b-8192",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        return f"[Groq search simulation failed: {str(e)}]"
+
+def generate_final_memo(condensed_summary, simulated_web_data):
+    prompt = f"""
+Act as a VC investment analyst.
+Based on the pitch deck content and enriched web research below, write an exhaustive, structured investor memo with subpoints.
+
+--- PITCH DECK (condensed summary) ---
+{condensed_summary}
+
+--- WEB RESEARCH (company, founders, product news, site metadata) ---
+{simulated_web_data}
+
+Your output should include:
+1. Executive Summary
+2. Company Overview
+   - Name, founding year, location, website, domains of operation
+3. Team & Founders
+   - Backgrounds, strengths, possible gaps
+4. Technology Breakdown (NEW)
+   - What kind of technology is being used? (e.g. AI, ML, Blockchain)
+   - Is this technology necessary and beneficial for the solution?
+   - Could this work without tech? Why or why not?
+   - Explain in layman's language using jugaad-style Indian analogies
+   - Evaluate tech defensibility: is it hard to copy or replicate?
+5. Product & IP
+   - Product line, tech stack, innovation, and protectability
+6. Market
+   - TAM/SAM, ICP, timing
+7. Traction
+   - Deployments, revenues, partnerships
+8. Financial Summary
+   - Previous rounds, ask, use of funds
+9. Unit Economics
+   - Pricing model, margin, CAC, LTV
+10. Competitive Landscape
+   - Global + Indian peers with funding/stage comparisons
+   - Table-style competitor comparison
+11. Website & Public Presence
+   - Meta info, credibility, brand impression
+12. Strategic Concerns & Risks
+13. Roadmap & Execution Readiness
+14. Exit Potential (IPO, acquisition)
+15. Final Recommendation
+   - Analyst verdict, confidence score, VC thesis match
+
+Also include:
+- PR highlights, awards, endorsements
+- Vision vs execution gaps
+- Differentiators for investors
+"""
+    try:
+        response = client.chat.completions.create(
+            model="llama3-70b-8192",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.4
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        return f"[Groq final memo failed: {str(e)}]"
+
+def show_pdf(file_path):
+    with open(file_path, "rb") as f:
+        base64_pdf = base64.b64encode(f.read()).decode("utf-8")
+    pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="700px" type="application/pdf"></iframe>'
+    st.markdown(pdf_display, unsafe_allow_html=True)
+
+if uploaded_file and not st.session_state.memo_generated:
+    temp_path = f"/tmp/{uploaded_file.name}"
+    with open(temp_path, "wb") as f:
         f.write(uploaded_file.read())
+    st.session_state.uploaded_file_path = temp_path
 
-    pdf_data = extract_pdf_content(file_path)
-    company = pdf_data["companies"][0] if pdf_data["companies"] else "Unknown_Company"
-    founders = pdf_data["people"][:3]
-    web_data = web_enrichment(company, founders, pdf_data["raw_text"])
-    report = generate_structured_output(pdf_data, web_data)
+    status_box = st.empty()
 
-    col1, col2 = st.columns(2)
+    status_box.info("📄 Extracting and summarizing PDF pages...")
+    page_texts = extract_text_by_page(temp_path)
+    combined_page_summaries = []
 
-    with col1:
-        st.subheader("📑 Extracted Pitch Deck Text")
-        st.code(pdf_data['raw_text'][:5000])
+    for i, page in enumerate(page_texts):
+        status_box.info(f"🧠 Summarizing page {i+1}...")
+        summary = summarize_page_content(page[:3000], i + 1)
+        combined_page_summaries.append(f"[Page {i+1}]\n{summary}")
 
-    with col2:
-        st.subheader("🧠 Investor Memo Output")
-        st.write(report)
+    full_summary_text = "\n\n".join(combined_page_summaries)
 
-    st.success("✅ Memo generated.")
-else:
-    st.info("Please upload a pitch deck PDF to begin.")
+    status_box.info("🔍 Extracting entities...")
+    all_text = "\n".join(page_texts)
+    entities = analyze_entities(all_text)
+    company = st.session_state.user_company_name
+    founders = entities["people"][:3]
+
+    status_box.info("🧠 Condensing pitch content...")
+    condensed_summary = summarize_entire_deck(full_summary_text, company, founders)
+
+    status_box.info("🌐 Simulating web research...")
+    simulated_web_data = groq_simulate_web_research(company, founders)
+
+    status_box.info("📊 Generating investor memo...")
+    final_memo = generate_final_memo(condensed_summary, simulated_web_data)
+
+    st.session_state.memo_generated = True
+    st.session_state.final_memo = final_memo
+    status_box.empty()
+
+if st.session_state.memo_generated:
+    tab1, tab2, tab3 = st.tabs(["📘 Memo", "📄 PDF Preview", "💬 Chat"])
+
+    with tab1:
+        st.subheader("📘 Final Investor Memo")
+        st.markdown(st.session_state.final_memo)
+        st.download_button("📥 Download Memo", st.session_state.final_memo, file_name="Investor_Memo.txt")
+
+    with tab2:
+        st.subheader("📄 Original Pitch Deck Preview")
+        show_pdf(st.session_state.uploaded_file_path)
+
+    with tab3:
+        st.subheader("💬 VC Chat Assistant")
+        user_input = st.text_input("Ask a question about the startup, market, team...", key="chat_input")
+        if user_input and user_input.strip():
+            response = chat_with_groq(user_input)
+            st.markdown(f"**🧑‍💼 You:** {user_input}")
+            st.markdown(f"**🤖 AI Analyst:** {response}")
+
+        if st.session_state.chat_history:
+            st.markdown("---")
+            st.markdown("### 💬 Chat History")
+            for msg in st.session_state.chat_history:
+                role = "🧑‍💼 You" if msg["role"] == "user" else "🤖 AI Analyst"
+                st.markdown(f"**{role}:** {msg['content']}")
