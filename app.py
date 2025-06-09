@@ -1,14 +1,16 @@
 import os
 import json
+import re
 import PyPDF2
 import streamlit as st
 import spacy
 from openai import OpenAI
 import base64
+import pandas as pd
 
 # Setup Groq-compatible OpenAI client
 client = OpenAI(
-    api_key="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",
+    api_key="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",
     base_url="https://api.groq.com/openai/v1"
 )
 
@@ -127,7 +129,7 @@ Collect and summarize publicly available information such as:
 Provide the research output in JSON format under keys like:
 - name, website, domain, location, founded_year, product_overview, news, social_links, funding_info, investor_names, media_mentions, awards, team_highlights
 
-If anything is missing, say \"unknown\".
+If anything is missing, say "unknown".
 """
     try:
         response = client.chat.completions.create(
@@ -153,40 +155,21 @@ Based on the pitch deck content and enriched web research below, write an exhaus
 Your output should include:
 1. Executive Summary
 2. Company Overview
-   - Name, founding year, location, website, domains of operation
 3. Team & Founders
-   - Backgrounds, strengths, possible gaps
-4. Technology Breakdown (NEW)
-   - What kind of technology is being used? (e.g. AI, ML, Blockchain)
-   - Is this technology necessary and beneficial for the solution?
-   - Could this work without tech? Why or why not?
-   - Explain in layman's language using jugaad-style Indian analogies
-   - Evaluate tech defensibility: is it hard to copy or replicate?
+4. Technology Breakdown
 5. Product & IP
-   - Product line, tech stack, innovation, and protectability
 6. Market
-   - TAM/SAM, ICP, timing
 7. Traction
-   - Deployments, revenues, partnerships
 8. Financial Summary
-   - Previous rounds, ask, use of funds
 9. Unit Economics
-   - Pricing model, margin, CAC, LTV
 10. Competitive Landscape
-   - Global + Indian peers with funding/stage comparisons
-   - Table-style competitor comparison
 11. Website & Public Presence
-   - Meta info, credibility, brand impression
 12. Strategic Concerns & Risks
 13. Roadmap & Execution Readiness
 14. Exit Potential (IPO, acquisition)
 15. Final Recommendation
-   - Analyst verdict, confidence score, VC thesis match
 
-Also include:
-- PR highlights, awards, endorsements
-- Vision vs execution gaps
-- Differentiators for investors
+Include any important external URLs referenced in the memo.
 """
     try:
         response = client.chat.completions.create(
@@ -203,6 +186,56 @@ def show_pdf(file_path):
         base64_pdf = base64.b64encode(f.read()).decode("utf-8")
     pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="700px" type="application/pdf"></iframe>'
     st.markdown(pdf_display, unsafe_allow_html=True)
+
+def build_summary_table():
+    prompt = f"""
+Act as a VC analyst.
+Extract a detailed, in-depth structured summary from the following investor memo.
+Provide extensive insights under each section for granular analysis.
+
+Output as a JSON array of objects with keys:
+- Section
+- Subsections (optional): Bullet-point highlights under the section
+- Details: Clear, specific takeaways or descriptions
+- Links (if any): A list of relevant external URLs mentioned in that section
+
+Format:
+[
+  {{
+    "Section": "Market Overview",
+    "Subsections": ["Target Segments", "Customer Pain Points"],
+    "Details": "• TAM is estimated at $8B...\\n• Primarily focused on Gen Z urban consumers...",
+    "Links": ["https://example.com/report"]
+  }},
+  ...
+]
+
+Investor Memo:
+{st.session_state.final_memo}
+"""
+    try:
+        response = client.chat.completions.create(
+            model="llama3-70b-8192",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.4
+        )
+        content = response.choices[0].message.content.strip()
+        match = re.search(r'\[\s*{.*?}\s*]', content, re.DOTALL)
+        if not match:
+            raise ValueError("No valid JSON array found in response.")
+        json_data = json.loads(match.group(0))
+        return pd.DataFrame(json_data)
+    except Exception as e:
+        return pd.DataFrame([{"Section": "Error", "Details": str(e)}])
+
+st.markdown("""
+    <style>
+    .css-1xarl3l, .css-1r6slb0, .css-1fcbfmj, .stDataFrame td {
+        white-space: pre-wrap !important;
+        word-break: break-word !important;
+    }
+    </style>
+""", unsafe_allow_html=True)
 
 if uploaded_file and not st.session_state.memo_generated:
     temp_path = f"/tmp/{uploaded_file.name}"
@@ -243,7 +276,7 @@ if uploaded_file and not st.session_state.memo_generated:
     status_box.empty()
 
 if st.session_state.memo_generated:
-    tab1, tab2, tab3 = st.tabs(["📘 Memo", "📄 PDF Preview", "💬 Chat"])
+    tab1, tab2, tab3, tab4 = st.tabs(["📘 Memo", "📄 PDF Preview", "💬 Chat", "📋 Summary Table"])
 
     with tab1:
         st.subheader("📘 Final Investor Memo")
@@ -268,3 +301,8 @@ if st.session_state.memo_generated:
             for msg in st.session_state.chat_history:
                 role = "🧑‍💼 You" if msg["role"] == "user" else "🤖 AI Analyst"
                 st.markdown(f"**{role}:** {msg['content']}")
+
+    with tab4:
+        st.subheader("📋 In-Depth AI-Filled Executive Summary Table (with Links)")
+        df = build_summary_table()
+        st.dataframe(df, use_container_width=True, hide_index=True)
