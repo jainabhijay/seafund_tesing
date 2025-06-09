@@ -306,3 +306,4 @@ if st.session_state.memo_generated:
         st.subheader("📋 In-Depth AI-Filled Executive Summary Table (with Links)")
         df = build_summary_table()
         st.dataframe(df, use_container_width=True, hide_index=True)
+
