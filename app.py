@@ -10,7 +10,7 @@ import pandas as pd
 
 # Setup Groq-compatible OpenAI client
 client = OpenAI(
-    api_key="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",
+    api_key="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",  # Replace with your actual Groq API key
     base_url="https://api.groq.com/openai/v1"
 )
 
@@ -118,18 +118,46 @@ You are an advanced AI with access to the internet and VC databases.
 
 Do an exhaustive online research for a startup called **{company}**, founded by {people_str}.
 Collect and summarize publicly available information such as:
-- Company website and domain
-- Founding year, location
-- Products, industry, customer segments
-- Revenue, funding rounds, investors
-- PR mentions, recent news
-- LinkedIn/AngelList/Crunchbase presence
-- Signals of traction or credibility
+Map out direct and indirect competitors at various stages (Seed to Series E and beyond).
+Compare product, funding, traction, and GTM strategies.
+Assess market size (TAM/SAM), funding climate, and investor behavior.
+Highlight differentiation or gaps in the startup’s positioning.
+🔍 Research Scope:
+🥊 1. Competitor Landscape
+Identify 8–12 startups or companies in the same or adjacent space.
+For each competitor, collect:
+Name, HQ, founding year
+Core product(s)/technology
+Funding stage and total raised
+Key investors
+Notable clients or deployments
+Recent strategic moves (launches, pivots, M&A)
+📊 2. Comparison Matrix
+Create a table comparing the target startup with key competitors across:
+Product depth
+what is the tech differentiation
+Revenue traction
+Funding raised
+Stage and GTM approach
+IP or defensibility
+📈 3. Funding Trends
+Summarize recent fundraising in this space (last 2–3 years).
+Flag active VCs, corporate investors, or government grants.
+Note valuation shifts or SPAC/IPO exits if relevant.
+🌍 4. Market Size & Demand Signals
+Estimate TAM/SAM using credible market reports, government data, or proxy benchmarks.
+Include emerging trends, customer behaviors, or regulatory shifts.
+Use tools like Crunchbase, Tracxn, Gartner, Reddit, job boards, and LinkedIn signals.
+🔑 5. Strategic Insights
+What are the whitespace opportunities?
+What moat (if any) does the startup have?
+How fast can incumbents replicate the startup’s playbook?
+Where are competitors ahead or behind?
 
 Provide the research output in JSON format under keys like:
 - name, website, domain, location, founded_year, product_overview, news, social_links, funding_info, investor_names, media_mentions, awards, team_highlights
 
-If anything is missing, say "unknown".
+If anything is missing, say \"unknown\".
 """
     try:
         response = client.chat.completions.create(
@@ -155,21 +183,46 @@ Based on the pitch deck content and enriched web research below, write an exhaus
 Your output should include:
 1. Executive Summary
 2. Company Overview
+   - Name, founding year, location, website, domains of operation
 3. Team & Founders
-4. Technology Breakdown
+   - Backgrounds, strengths, possible gaps
+4. Technology Breakdown (NEW)
+   - What kind of technology is being used? (e.g. AI, ML, Blockchain)
+   - Is this technology necessary and beneficial for the solution?
+   - Could this work without tech? Why or why not?
+   - Explain in layman's language using jugaad-style Indian analogies
+   - Evaluate tech defensibility: is it hard to copy or replicate?
 5. Product & IP
+   - Product line, tech stack, innovation, and protectability
 6. Market
+   - TAM/SAM, ICP, timing
 7. Traction
+   - Deployments, revenues, partnerships
 8. Financial Summary
+   - Previous rounds, ask, use of funds
 9. Unit Economics
+   - Pricing model, margin, CAC, LTV
 10. Competitive Landscape
+   - Global + Indian peers with funding/stage comparisons
+   - Table-style competitor comparison
 11. Website & Public Presence
+   - Meta info, credibility, brand impression
 12. Strategic Concerns & Risks
 13. Roadmap & Execution Readiness
 14. Exit Potential (IPO, acquisition)
 15. Final Recommendation
+   - Analyst verdict, confidence score, VC thesis match
+16.Executive Summary
+17.Competitor Profiles (1-paragraph each + data table)
+18.Competitive Matrix
+19.Funding and Market Landscape
+20.Key Takeaways / Strategic Notes
+30.Recommendation (Proceed / Hold / Pass)
 
-Include any important external URLs referenced in the memo.
+Also include:
+- PR highlights, awards, endorsements
+- Vision vs execution gaps
+- Differentiators for investors
 """
     try:
         response = client.chat.completions.create(
@@ -193,13 +246,18 @@ Act as a VC analyst.
 Extract a detailed, in-depth structured summary from the following investor memo.
 Provide extensive insights under each section for granular analysis.
 
+**Important:** Your response must contain only the JSON array wrapped in ```json and ``` markers, with no additional text, explanations, or comments.
+
 Output as a JSON array of objects with keys:
 - Section
 - Subsections (optional): Bullet-point highlights under the section
 - Details: Clear, specific takeaways or descriptions
 - Links (if any): A list of relevant external URLs mentioned in that section
 
-Format:
+Ensure that the JSON is properly formatted, with all strings correctly escaped, and no trailing commas or other syntax errors.
+
+Example format:
+```json
 [
   {{
     "Section": "Market Overview",
@@ -209,6 +267,7 @@ Format:
   }},
   ...
 ]
+```
 
 Investor Memo:
 {st.session_state.final_memo}
@@ -220,13 +279,20 @@ Investor Memo:
             temperature=0.4
         )
         content = response.choices[0].message.content.strip()
-        match = re.search(r'\[\s*{.*?}\s*]', content, re.DOTALL)
+        # Extract the JSON block
+        match = re.search(r'```json\s*(.*?)\s*```', content, re.DOTALL)
         if not match:
-            raise ValueError("No valid JSON array found in response.")
-        json_data = json.loads(match.group(0))
+            raise ValueError("No JSON block found in response.")
+        json_str = match.group(1)
+        # Parse the JSON
+        json_data = json.loads(json_str)
         return pd.DataFrame(json_data)
     except Exception as e:
-        return pd.DataFrame([{"Section": "Error", "Details": str(e)}])
+        return pd.DataFrame([{
+            "Section": "Error",
+            "Details": str(e),
+            "Raw Response": content
+        }])
 
 st.markdown("""
     <style>
@@ -305,5 +371,10 @@ if st.session_state.memo_generated:
     with tab4:
         st.subheader("📋 In-Depth AI-Filled Executive Summary Table (with Links)")
         df = build_summary_table()
-        st.dataframe(df, use_container_width=True, hide_index=True)
-
+        if df.iloc[0]["Section"] == "Error":
+            st.error("There was an error generating the summary table.")
+            st.write("**Error Details:**", df.iloc[0]["Details"])
+            st.write("**Raw API Response:**")
+            st.code(df.iloc[0]["Raw Response"], language="json")
+        else:
+            st.dataframe(df, use_container_width=True, hide_index=True)
