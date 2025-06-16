@@ -10,7 +10,7 @@ import pandas as pd
 
 # Setup Groq-compatible OpenAI client
 client = OpenAI(
-    api_key="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",  # Replace with your actual Groq API key
+    api_key="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",  # Replace with your actual Groq API key
     base_url="https://api.groq.com/openai/v1"
 )
 
